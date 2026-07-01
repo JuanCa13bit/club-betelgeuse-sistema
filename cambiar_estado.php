@@ -11,5 +11,6 @@ if (isset($_GET['id']) && isset($_GET['accion'])) {
     $stmt->execute();
 }
 
-header("Location: admin_miembros.php");
+header("Location: admin_miembros.php?estado=" . ($nuevo_estado ? 'activos' : 'inactivos'));
 exit;
+?>

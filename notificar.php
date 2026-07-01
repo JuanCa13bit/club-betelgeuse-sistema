@@ -1,16 +1,15 @@
 <?php
 require_once 'includes/config.php';
-
-// Cargar PHPMailer
-use PHPMailer\PHPMailer\PHPMailer;
-use PHPMailer\PHPMailer\Exception;
-
 require_once 'includes/PHPMailer/src/Exception.php';
 require_once 'includes/PHPMailer/src/PHPMailer.php';
 require_once 'includes/PHPMailer/src/SMTP.php';
 
+use PHPMailer\PHPMailer\PHPMailer;
+use PHPMailer\PHPMailer\Exception;
+
 $forzar = isset($_GET['forzar']);
 $hoy = date('Y-m-d');
+$dia_semana = date('N'); // 1=Lunes, 5=Viernes
 
 echo "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>Notificaciones</title>
     <link href='assets/css/bootstrap.min.css' rel='stylesheet'></head><body class='container mt-4'>";
@@ -30,86 +29,75 @@ if ($forzar) {
     $conn->query("DELETE FROM notificacion_envios WHERE fecha_envio = '$hoy'");
 }
 
-// Cumpleaños de hoy
-$cumpleanios = $conn->query("
-    SELECT nombre, apellido, TIMESTAMPDIFF(YEAR, fecha_nacimiento, CURDATE()) AS edad
-    FROM usuarios WHERE DATE_FORMAT(fecha_nacimiento, '%m-%d') = DATE_FORMAT(CURDATE(), '%m-%d')
-");
+// --- LÓGICA DE FECHAS ---
+if ($dia_semana == 5) {
+    // Es viernes: resumen de la SEMANA SIGUIENTE (lunes a domingo)
+    $inicio = date('Y-m-d', strtotime('next monday'));
+    $fin = date('Y-m-d', strtotime('next sunday'));
+    $titulo_rango = "Resumen Semanal: " . date('d/m', strtotime($inicio)) . " al " . date('d/m', strtotime($fin));
+} else {
+    // Días normales: hoy + próximos 7 días
+    $inicio = $hoy;
+    $fin = date('Y-m-d', strtotime('+7 days'));
+    $titulo_rango = "Notificaciones del " . date('d/m/Y');
+}
 
-// Cumpleaños próximos 7 días
-$cumples_proximos = $conn->query("
-    SELECT nombre, apellido, DATE_FORMAT(fecha_nacimiento, '%d/%m') AS fecha,
-           TIMESTAMPDIFF(YEAR, fecha_nacimiento, CURDATE()) AS edad
-    FROM usuarios WHERE DATE_FORMAT(fecha_nacimiento, '%m-%d') BETWEEN 
-    DATE_FORMAT(CURDATE(), '%m-%d') AND DATE_FORMAT(DATE_ADD(CURDATE(), INTERVAL 7 DAY), '%m-%d')
+// Cumpleaños en el rango
+$cumpleanios = $conn->query("
+    SELECT nombre, apellido, fecha_nacimiento,
+           TIMESTAMPDIFF(YEAR, fecha_nacimiento, CURDATE()) AS edad,
+           DATE_FORMAT(fecha_nacimiento, '%d/%m') AS fecha
+    FROM usuarios
+    WHERE DATE_FORMAT(fecha_nacimiento, '%m-%d') BETWEEN 
+          DATE_FORMAT('$inicio', '%m-%d') AND DATE_FORMAT('$fin', '%m-%d')
     ORDER BY DATE_FORMAT(fecha_nacimiento, '%m-%d')
 ");
 
-// Eventos
-$hoy_eventos = $conn->query("SELECT titulo, descripcion, hora FROM eventos_calendario WHERE fecha = CURDATE() ORDER BY hora");
-$manana = date('Y-m-d', strtotime('+1 day'));
-$eventos_manana = $conn->query("SELECT titulo, descripcion, hora FROM eventos_calendario WHERE fecha = '$manana' ORDER BY hora");
-$eventos_semana = $conn->query("SELECT titulo, fecha, hora FROM eventos_calendario WHERE fecha BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 7 DAY) ORDER BY fecha, hora");
+// Eventos en el rango
+$eventos = $conn->query("
+    SELECT titulo, descripcion, fecha, hora
+    FROM eventos_calendario
+    WHERE fecha BETWEEN '$inicio' AND '$fin'
+    ORDER BY fecha, hora
+");
 
 // Si no hay nada, no enviar
-$hay_noticias = ($cumpleanios->num_rows > 0 || $eventos_manana->num_rows > 0 || $cumples_proximos->num_rows > 0 || $hoy_eventos->num_rows > 0 || $eventos_semana->num_rows > 0);
+$hay_noticias = ($cumpleanios->num_rows > 0 || $eventos->num_rows > 0);
 
 if (!$hay_noticias) {
-    echo "<div class='alert alert-info'><h4>😊 Sin novedades hoy</h4><a href='dashboard.php' class='btn btn-secondary'>Volver</a></div></body></html>";
+    echo "<div class='alert alert-info'><h4>😊 Sin novedades para el período</h4><a href='dashboard.php' class='btn btn-secondary'>Volver</a></div></body></html>";
     exit;
 }
 
 // Construir mensaje HTML
 $mensaje = "<html><head><meta charset='UTF-8'><style>
     body{font-family:Arial;color:#333}
-    .header{background:#0d1b3e;color:white;padding:20px;text-align:center}
+    .header{background:#0d1b3e;color:white;padding:20px;text-align:center;border-radius:10px}
     .section{margin:20px 0;padding:15px;background:#f8f9fa;border-radius:10px}
     .section h3{color:#0d1b3e}
     .item{padding:8px 0;border-bottom:1px solid #eee}
     .footer{text-align:center;color:#999;font-size:12px;margin-top:20px}
 </style></head><body>
-<div class='header'><h2>⭐ Club Betelgeuse</h2><p>Notificaciones " . date('d/m/Y') . "</p></div>";
+<div class='header'><h2>⭐ Club Betelgeuse</h2><p>$titulo_rango</p></div>";
 
+// Cumpleaños
 if ($cumpleanios->num_rows > 0) {
-    $mensaje .= "<div class='section'><h3>🎂 Cumpleaños de Hoy</h3>";
+    $mensaje .= "<div class='section'><h3>🎂 Cumpleaños</h3>";
     while ($c = $cumpleanios->fetch_assoc()) {
-        $mensaje .= "<div class='item'>🎂 <strong>{$c['nombre']} {$c['apellido']}</strong> ({$c['edad']} años)</div>";
+        $mensaje .= "<div class='item'><strong>{$c['nombre']} {$c['apellido']}</strong> - {$c['fecha']} (" . ($c['edad'] + 1) . " años)</div>";
     }
     $mensaje .= "</div>";
 }
 
-if ($hoy_eventos->num_rows > 0) {
-    $mensaje .= "<div class='section'><h3>📅 Eventos de Hoy</h3>";
-    while ($e = $hoy_eventos->fetch_assoc()) {
-        $h = $e['hora'] ? substr($e['hora'],0,5) : '';
-        $mensaje .= "<div class='item'>📅 <strong>{$e['titulo']}</strong> $h</div>";
-    }
-    $mensaje .= "</div>";
-}
-
-if ($eventos_manana->num_rows > 0) {
-    $mensaje .= "<div class='section'><h3>⚠️ Mañana</h3>";
-    while ($e = $eventos_manana->fetch_assoc()) {
-        $h = $e['hora'] ? substr($e['hora'],0,5) : '';
-        $mensaje .= "<div class='item'>📅 <strong>{$e['titulo']}</strong> $h</div>";
-    }
-    $mensaje .= "</div>";
-}
-
-if ($cumples_proximos->num_rows > 0) {
-    $mensaje .= "<div class='section'><h3>🎉 Próximos Cumpleaños</h3>";
-    while ($c = $cumples_proximos->fetch_assoc()) {
-        $mensaje .= "<div class='item'><strong>{$c['nombre']} {$c['apellido']}</strong> - {$c['fecha']} (" . ($c['edad']+1) . " años)</div>";
-    }
-    $mensaje .= "</div>";
-}
-
-if ($eventos_semana->num_rows > 0) {
-    $mensaje .= "<div class='section'><h3>📅 Esta Semana</h3>";
-    while ($e = $eventos_semana->fetch_assoc()) {
+// Eventos
+if ($eventos->num_rows > 0) {
+    $mensaje .= "<div class='section'><h3>📅 Eventos</h3>";
+    while ($e = $eventos->fetch_assoc()) {
         $f = date('d/m', strtotime($e['fecha']));
-        $h = $e['hora'] ? substr($e['hora'],0,5) : '';
-        $mensaje .= "<div class='item'><strong>$f</strong> - {$e['titulo']} $h</div>";
+        $h = $e['hora'] ? substr($e['hora'], 0, 5) : '';
+        $mensaje .= "<div class='item'><strong>$f</strong> - {$e['titulo']} $h";
+        if ($e['descripcion']) $mensaje .= "<br><small>{$e['descripcion']}</small>";
+        $mensaje .= "</div>";
     }
     $mensaje .= "</div>";
 }
@@ -128,17 +116,17 @@ while ($d = $destinatarios->fetch_assoc()) {
         $mail->Host = 'smtp.gmail.com';
         $mail->SMTPAuth = true;
         $mail->Username = 'clubbetelgeuse2017@gmail.com';
-        $mail->Password = 'sgvy jpaj blqg ircw';  // ⚠️ Cambiar por la real
+        $mail->Password = 'sgvy jpaj blqg ircw'; // ⚠️ CAMBIAR AQUÍ
         $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
         $mail->Port = 587;
         $mail->CharSet = 'UTF-8';
-        
+
         $mail->setFrom('clubbetelgeuse2017@gmail.com', 'Club Betelgeuse');
         $mail->addAddress($d['email'], $d['nombre']);
         $mail->isHTML(true);
-        $mail->Subject = '📅 Notificaciones Club Betelgeuse - ' . date('d/m/Y');
+        $mail->Subject = ($dia_semana == 5) ? '📅 ' . $titulo_rango : '📅 Notificaciones Club Betelgeuse - ' . date('d/m/Y');
         $mail->Body = $mensaje;
-        
+
         $mail->send();
         $conn->query("INSERT IGNORE INTO notificacion_envios (destinatario_id, fecha_envio) VALUES ({$d['id']}, '$hoy')");
         $enviados++;
